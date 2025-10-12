@@ -1,0 +1,22 @@
+name: Fetch Tariff
+
+on:
+  schedule:
+    - cron: "7 21 * * 1-5"  # Mon-Fri 21:07 UTC
+  workflow_dispatch: # allows manual trigger
+
+jobs:
+  fetch-tariff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      - name: Install dependencies
+        run: npm ci
+      - name: Run fetch-tariff.js
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: node fetch-tariff.js
