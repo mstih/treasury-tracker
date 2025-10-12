@@ -11,7 +11,7 @@ on:
 jobs:
   fetch-tariff:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '7 21 * * 1-5'
+    if: github.event.schedule == '7 21 * * 1-5' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v3
       - name: Setup Node.js
@@ -27,7 +27,7 @@ jobs:
 
   wakeup-api:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '*/10 * * * *'
+    if: github.event.schedule == '*/10 * * * *' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Wake up Render API
         run: curl -s ${{ secrets.API_URL }} >/dev/null
