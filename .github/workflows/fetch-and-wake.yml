@@ -1,33 +1,33 @@
-name: Tariff Cron & API Wakeup
+name: Tariff Fetch & API Wakeup
 
 on:
-  # Fetch Tariff Mon-Fri 21:07 UTC
+  # Schedule Fetch Tariff Mon-Fri 21:07 UTC
   schedule:
     - cron: "7 21 * * 1-5"
     # Schedule Wakeup every 10 minutes
     - cron: "*/10 * * * *"
-  workflow_dispatch: 
+  workflow_dispatch: # optional manual trigger
 
 jobs:
   fetch-tariff:
-    if: github.event.schedule == '7 21 * * 1-5' 
     runs-on: ubuntu-latest
+    if: github.event.schedule == '7 21 * * 1-5'
     steps:
       - uses: actions/checkout@v3
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: 18
       - name: Install dependencies
         run: npm ci
-      - name: Run fetch-tariff.js
+      - name: Run fetch-tariff
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: node fetch-tariff.js
 
   wakeup-api:
-    if: github.event.schedule == '*/10 * * * *'  # wakeup 10-min schedule
     runs-on: ubuntu-latest
+    if: github.event.schedule == '*/10 * * * *'
     steps:
       - name: Wake up Render API
         run: curl -s ${{ secrets.API_URL }} >/dev/null
