@@ -12,9 +12,9 @@ const DB = process.env.DATABASE_URL;
 const FISCAL_BASE = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/deposits_withdrawals_operating_cash';
 const PAGE_SIZE = 500;
 
-// Transform one day behind, if weekend then go back to last workday
-function prevWorkingDay() {
-  let day = DateTime.now().setZone('Europe/Ljubljana').minus({ days: 1 });
+// Transform specified days behind, if weekend then go back to last workday
+function setMinusDays(numDays) {
+  let day = DateTime.now().setZone('Europe/Ljubljana').minus({ days: numDays});
   while (day.weekday > 5) day = day.minus({ days: 1 });
   return day.toISODate();
 }
@@ -105,9 +105,10 @@ async function incMonthlyYearly(client, date, deltaTariff, deltaTotal){
     `, [yearKey, deltaTariff, deltaTotal]);
 }
 
-async function main() {
-  const date = prevWorkingDay();
-  console.log('Target date:', date);
+// Main function for fetching, parameter deltaDays sets for how many days back should we check
+async function fetchTariffs(deltaDays) {
+  const date = setMinusDays(deltaDays);
+  console.log('Starting fetch for target date:', date);
 
   let rows;
   try {
@@ -203,6 +204,7 @@ async function main() {
       console.log('No aggregates changes (delta = 0).')
     }
     console.log(`Upsert completed for date ${date}: tariff=${tariffValRounded}M ; total=${totalValRounded}M`)
+    console.log('DONE!')
   } catch (e){
     console.error('DB error during data update: ', e.message);
     await saveRawLocally(date, rows);
@@ -210,6 +212,13 @@ async function main() {
   } finally {
     try {await client.end();} catch {}
   }
+}
+
+async function main() {
+  // Check for -2 working days ago if some mismatch in data and data reporting
+  await fetchTariffs(2);
+  // Check for -1 working day if normal
+  await fetchTariffs(1);
 }
 
 main().catch(e => {

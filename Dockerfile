@@ -1,7 +1,7 @@
 # multi-stage - installs deps in first stage (small final image)
 FROM node:18-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json* ./
 RUN npm ci --production
 
 FROM node:18-alpine AS runtime
