@@ -1,0 +1,15 @@
+name: Wake Up Render API
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # every 10 minutes
+  workflow_dispatch: # allows manual trigger
+
+jobs:
+  wakeup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake up Render API
+        env:
+          API_URL: ${{ secrets.API_URL }}
+        run: curl -s $API_URL >/dev/null
