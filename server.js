@@ -12,16 +12,21 @@ const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
 app.use(cors({origin: allowedOrigin}));
 app.use(express.json());
 
+// Route for status checks
 app.get('/healtz', async(req,res) => {
     try {
         await pool.query('SELECT 1');
-        res.status(200).send('ok');
-    } catch (error){
-        console.error('Health check error: ', error);
-        res.status(500).send('db error')
+        res.status(200).json({
+          status: 'OK',
+          timestamp: new Date().toISOString()
+        })
+    } catch (e){
+        console.error('Health check error: ', e);
+        res.status(503).json({status: 'ERROR', error: `Database down: ${e}`})
     }
 });
 
+// Gets the summary for the last date/specific date
 app.get('/api/summary/today', async (req, res) => {
   try {
     const lastRowResult = await pool.query(
@@ -42,6 +47,7 @@ app.get('/api/summary/today', async (req, res) => {
   }
 });
 
+// Get data for each specific day together with aggregate cumulatives of the same year
 app.get('/api/cumulative', async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
 
@@ -67,6 +73,7 @@ app.get('/api/cumulative', async (req, res) => {
   }
 });
 
+// Get data for each month cumulative
 app.get('/api/monthly', async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
 
