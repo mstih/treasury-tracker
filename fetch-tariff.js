@@ -5,12 +5,39 @@ import axios from 'axios';
 import pg from 'pg';
 import { DateTime } from 'luxon';
 import dotenv from 'dotenv';
+
+// Load environment variables
 dotenv.config();
 
-const { Client } = pg;
+// Database connection
+const { Pool } = pg;
 const DB = process.env.DATABASE_URL;
+
+// Validate DATABASE_URL existence
+if(!DB) {
+  console.error('DATABASE_URL environment varaible is missing!')
+  process.exit(1);
+}
+
+// Set other variables for API
 const FISCAL_BASE = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/deposits_withdrawals_operating_cash';
 const PAGE_SIZE = 500;
+
+// Create pool once
+const pool = new Pool({
+  connectionString: DB,
+  ssl: {rejectUnauthorized: false},
+  max: 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
+});
+
+// Handle pool errors
+pool.on('error', (err) => {
+  console.error('Unexpected PostgreSQL pool error: ', err.message)
+});
 
 // Transform specified days behind, if weekend then go back to last workday
 function setMinusDays(numDays) {
@@ -63,7 +90,7 @@ async function saveRawLocally(date, rows) {
 }
 
 // Function that queries the database and stores the values and return values to calculate sums later
-async function upsertDailyToDB(client, date, tariffMillions, totalMillions, rawRows) {
+async function upsertDailyToDB(date, tariffMillions, totalMillions, rawRows) {
   const sql = `
     INSERT INTO tariff_daily (dts_date, tariff_millions, total_deposits_millions, raw)
     VALUES ($1,$2,$3,$4)
@@ -74,18 +101,18 @@ async function upsertDailyToDB(client, date, tariffMillions, totalMillions, rawR
           fetched_at = NOW()
     RETURNING tariff_millions, total_deposits_millions;
   `;
-  const res = await client.query(sql, [date, tariffMillions, totalMillions, JSON.stringify(rawRows)]);
+  const res = await pool.query(sql, [date, tariffMillions, totalMillions, JSON.stringify(rawRows)]);
   return res.rows[0];
 }
 
-async function incMonthlyYearly(client, date, deltaTariff, deltaTotal){
+async function incMonthlyYearly(date, deltaTariff, deltaTotal){
   if (deltaTariff === 0 && deltaTotal === 0) return;
 
   const monthKey = date.slice(0,7) + '-01'; // convert to first day of each month for monthly sums
   const yearKey = Number(date.slice(0,4));
 
   // Insert or add deltas to monthly table
-  await client.query(`
+  await pool.query(`
     INSERT INTO tariff_monthly (month, tariff_millions_sum, total_deposits_millions_sum)
     VALUES ($1, $2, $3)
     ON CONFLICT (month) DO UPDATE
@@ -95,7 +122,7 @@ async function incMonthlyYearly(client, date, deltaTariff, deltaTotal){
     `, [monthKey, deltaTariff, deltaTotal]);
   
   // Same for yearly
-  await client.query(`
+  await pool.query(`
     INSERT INTO tariff_yearly (year, tariff_millions_sum, total_deposits_millions_sum)
     VALUES ($1, $2, $3)
     ON CONFLICT (year) DO UPDATE
@@ -116,7 +143,8 @@ async function fetchTariffs(deltaDays) {
   } catch (e) {
     // Return error with API
     console.error('API fetch error:', e.response?.data ?? e.message);
-    return process.exitCode = 1;
+    process.exitCode = 1;
+    return;
   }
 
   // No rows error
@@ -169,16 +197,6 @@ async function fetchTariffs(deltaDays) {
 
 
   // Establish DB connection, if fails show error message
-  let client;
-  try {
-    client = new Client({ connectionString: DB, ssl: { rejectUnauthorized: false }});
-    await client.connect();
-  } catch (e) {
-    console.error('DB connect failed:', e.message);
-    await saveRawLocally(date, rows);
-    return process.exitCode = 1;
-  }
-
   try{
     // If there are existing values
     const existingResponse = await client.query('SELECT tariff_millions, total_deposits_millions FROM tariff_daily WHERE dts_date=$1', [date])
@@ -215,10 +233,15 @@ async function fetchTariffs(deltaDays) {
 }
 
 async function main() {
-  // Check for -2 working days ago if some mismatch in data and data reporting
-  await fetchTariffs(2);
-  // Check for -1 working day if normal
-  await fetchTariffs(1);
+  try {
+      // Check for -2 working days ago if some mismatch in data and data reporting
+    await fetchTariffs(2);
+    // Check for -1 working day if normal
+    await fetchTariffs(1);
+  } finally {
+    await pool.end();
+    console.log('Connection Closed, Exiting Script...')
+  }
 }
 
 main().catch(e => {
