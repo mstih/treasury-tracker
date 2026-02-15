@@ -1,19 +1,29 @@
-// test-db.js
+// test.js
 import pg from 'pg';
 import dotenv from 'dotenv';
 dotenv.config();
 const { Client } = pg;
 
-(async () => {
-  const client = new Client({ connectionString: process.env.DATABASE_URL });
+
+const client = new Client({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  connectionTimeoutMillis: 30000,
+});
+
+async function test() {
   try {
+    console.log('Connecting...');
     await client.connect();
-    console.log('DB connected OK');
-    const r = await client.query('SELECT now()');
-    console.log('Server time:', r.rows[0]);
-  } catch (e) {
-    console.error('DB connect error:', e.message);
-  } finally {
-    try { await client.end(); } catch {}
+    console.log('SUCCESS!');
+    const res = await client.query('SELECT 1');
+    console.log('Query:', res.rows);
+    await client.end();
+  } catch (err) {
+    console.error('FAILED:', err.message);
+    console.error('Code:', err.code);
+    console.error('Full:', err);
   }
-})();
+}
+
+test();

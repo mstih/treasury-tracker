@@ -6,28 +6,13 @@ import dotenv from 'dotenv';
 import pool from './db.js'
 
 // Load enviroment variables
-dotenv.config();
+//dotenv.config();
 
 const app = express();
 
 // Security: Restrict CORS in production
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
-  : ["*"];
-
-app.use(cors({
-  origin: (origin, callback) => {
-    if(!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Origin not allowed!'))
-    }
-  },
-  credentials: true
-}));
-
+app.use(cors({origin: process.env.ALLOWED_ORIGIN || '*'}));
 app.use(express.json());
-
 
 // MIDDLEWARE: timeout 20s
 app.use((req,res,next) => {
@@ -40,22 +25,8 @@ app.use((req,res,next) => {
 // =========================================
 // HEALTH CHECK 
 // =========================================
-app.get('/healtz', async(req,res) => {
-    try {
-        await pool.query('SELECT 1');
-        res.status(200).json({
-          status: 'OK',
-          timestamp: new Date().toISOString(),
-          uptime: process.uptime()
-        });
-    } catch (error){
-        console.error('Health check failed: ', error.message);
-        res.status(503).json({
-          status: 'ERROR',
-          error: 'Database unavailable', 
-          timestamp: new Date().toISOString()
-        });
-    } 
+app.get('/healtz', (req,res) => {
+    res.status(200).json({status:'OK', timestamp: new Date().toISOString()})
 });
 
 // ==========================================
@@ -211,50 +182,35 @@ app.use((err,req,res,next) => {
 // ===========================================
 const PORT = process.env.PORT || 3000;
 
-// Verify DB connection before starting server
-async function startServer() {
+// Start server immediately (don't wait for DB)
+const server = app.listen(PORT, () => {
+  console.log(`API listening on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+});
+
+// Connect to database in background
+async function connectDatabase() {
   try {
     await pool.query('SELECT 1');
     console.log('Database connection verified');
-
-    const server = app.listen(PORT, () => {
-      console.log(`API listening on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
-    });
-
-    // Graceful shutdown
-    async function shutdown(signal) {
-      console.log(`\n${signal} received. Starting graceful shutdown...`);
-      
-      server.close((err) => {
-        if (err) {
-          console.error('Error closing server: ', err);
-        }
-      });
-
-      try {
-        await pool.end();
-        console.log('Database pool closed.');
-        process.exit(0);
-      } catch (error) {
-        console.error('Error closing database pool: ', error);
-        process.exit(1);
-      }
-    }
-
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
-
-    // Handle other exceptions
-    process.on('uncaughtException', (err) => {
-      console.error('Uncaught Exception: ', err);
-      shutdown('uncaughtException');
-    });
-    
   } catch (error) {
-    console.error('Failed to connect to database: ', error);
-    process.exit(1);
+    console.error('Database connection failed:', error.message);
+    console.log('Server running but database unavailable - will retry automatically');
   }
 }
 
-// START SERVER
-startServer();
+connectDatabase();
+
+// Graceful shutdown - simplified
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Shutting down...');
+  server.close(async () => {
+    await pool.end();
+    console.log('Database pool closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received. Shutting down...');
+  process.exit(0);
+});

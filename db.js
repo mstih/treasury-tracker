@@ -1,7 +1,7 @@
 // api/db.js
 import pg from 'pg';
-import dotenv from 'dotenv';
-dotenv.config();
+//import dotenv from 'dotenv';
+//dotenv.config();
 
 const { Pool } = pg;
 
@@ -17,18 +17,10 @@ const pool = new Pool({
   ssl: {rejectUnauthorized: false},
 
   // Pooling size
-  max: Number(process.env.PG_MAX_POOL || 10),
-
-  // Keep connection alive
-  keepAlive: true,
-  keepAliveInitialDelayMillis: 10000,
+  max: 10,
 
   // Timeouts
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-
-  // Query timeout
-  statement_timeout: 20000,
+  connectionTimeoutMillis: 30000,
 });
 
 // Handle errors
@@ -57,5 +49,13 @@ export const checkDBHealth = async () => {
     client.release()
   }
 }
+
+// test connection 
+export const testConnection = async () => {
+  const client = await pool.connect();
+  await client.query('SELECT 1');
+  client.release();
+  console.log('Database CONNECTED!')
+};
 
 export default pool;
