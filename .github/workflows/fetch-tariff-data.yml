@@ -16,10 +16,7 @@ jobs:
           node-version: 24
       - name: Install dependencies
         run: npm ci
-      - name: Install supabase
-        run: npm install @supabase/supabase-js
       - name: Run fetch-tariff.js
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: node fetch-tariff.js
