@@ -17,20 +17,17 @@ const pool = new Pool({
   ssl: {rejectUnauthorized: false},
 
   // Pooling size
-  max: 10,
+  max: 1,
 
   // Timeouts
-  connectionTimeoutMillis: 30000,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
 // Handle errors
 pool.on('error', (err) => {
   console.error('Unexpected PostgreSQL pool error', err.message);
 });
-
-pool.on("remove", () => {
-  console.log('Client removed from PostgreSQL pool.');
-})
 
 // Graceful shutdown
 process.on('SIGTERM', async () =>{

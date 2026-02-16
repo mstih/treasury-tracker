@@ -1,64 +1,36 @@
-// debug-fetch-tariff.js - drop-in for debugging API schema issues
+// fetch-tariffs-supabase.js
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
-import pg from 'pg';
 import { DateTime } from 'luxon';
 import dotenv from 'dotenv';
+import { createClient } from '@supabase/supabase-js';
 
-// Load environment variables
 dotenv.config();
 
-// Database connection
-const { Pool } = pg;
-const DB = process.env.DATABASE_URL;
+// ==========================
+// Supabase client
+// ==========================
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// Validate DATABASE_URL existence
-if(!DB) {
-  console.error('DATABASE_URL environment varaible is missing!')
-  process.exit(1);
-}
-
-// Set other variables for API
+// ==========================
+// Constants
+// ==========================
 const FISCAL_BASE = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/deposits_withdrawals_operating_cash';
 const PAGE_SIZE = 500;
 
-// Create pool once
-const pool = new Pool({
-  connectionString: DB,
-  ssl: {rejectUnauthorized: false},
-  max: 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  keepAlive: true,
-  keepAliveInitialDelayMillis: 10000,
-});
-
-// Handle pool errors
-pool.on('error', (err) => {
-  console.error('Unexpected PostgreSQL pool error: ', err.message)
-});
-
-// Transform specified days behind, if weekend then go back to last workday
+// ==========================
+// Helpers
+// ==========================
 function setMinusDays(numDays) {
-  let day = DateTime.now().setZone('Europe/Ljubljana').minus({ days: numDays});
+  let day = DateTime.now().setZone('Europe/Ljubljana').minus({ days: numDays });
   while (day.weekday > 5) day = day.minus({ days: 1 });
   return day.toISODate();
 }
 
-async function fetchForDateRaw(date) {
-  const res = await axios.get(FISCAL_BASE, {
-    params: {
-      'filter': `record_date:eq:${date}`,
-      'page[size]': PAGE_SIZE
-    },
-    timeout: 20000
-  });
-  return res.data?.data || [];
-}
-
-// If there is no data, return null,
-// Otherwise trim it, if still null return null
 function safeStr(word) {
   if (word === null || word === undefined) return null;
   const final = String(word).trim();
@@ -66,7 +38,6 @@ function safeStr(word) {
   return final;
 }
 
-// Parse string to number value
 function parseMillions(input) {
   if (input === null || input === undefined) return null;
   const num = Number(String(input).replace(/[^0-9.\-]/g, ''));
@@ -76,11 +47,21 @@ function parseMillions(input) {
 function isAggregateRow(row) {
   const cat = (safeStr(row.transaction_catg) || '').toLowerCase();
   const acct = (safeStr(row.account_type) || '').toLowerCase();
-  return /public debt|public debt cash issues|table iiib|table iiia|table iii|treasury general account total|total deposits|total withdrawals|deposits total|public debt issues|total, deposits/i.test(cat)
-      || /treasury general account total deposits|total deposits/i.test(acct);
+  return /public debt|total deposits|treasury general account total/i.test(cat)
+      || /total deposits|treasury general account total deposits/i.test(acct);
 }
 
-// Check if there is a temp directory, if yes create file and save response to file
+async function fetchForDateRaw(date) {
+  const res = await axios.get(FISCAL_BASE, {
+    params: {
+      filter: `record_date:eq:${date}`,
+      'page[size]': PAGE_SIZE
+    },
+    timeout: 20000
+  });
+  return res.data?.data || [];
+}
+
 async function saveRawLocally(date, rows) {
   const dir = path.join(process.cwd(), 'raw-responses');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir);
@@ -89,159 +70,105 @@ async function saveRawLocally(date, rows) {
   console.log('Saved raw response to', file);
 }
 
-// Function that queries the database and stores the values and return values to calculate sums later
+// ==========================
+// DB Upsert via Supabase RPC
+// ==========================
 async function upsertDailyToDB(date, tariffMillions, totalMillions, rawRows) {
-  const sql = `
-    INSERT INTO tariff_daily (dts_date, tariff_millions, total_deposits_millions, raw)
-    VALUES ($1,$2,$3,$4)
-    ON CONFLICT (dts_date) DO UPDATE
-      SET tariff_millions = EXCLUDED.tariff_millions,
-          total_deposits_millions = EXCLUDED.total_deposits_millions,
-          raw = EXCLUDED.raw,
-          fetched_at = NOW()
-    RETURNING tariff_millions, total_deposits_millions;
-  `;
-  const res = await pool.query(sql, [date, tariffMillions, totalMillions, JSON.stringify(rawRows)]);
-  return res.rows[0];
+  const { data, error } = await supabase.rpc('upsert_tariff_daily', {
+    p_date: date,
+    p_tariff: tariffMillions,
+    p_total: totalMillions,
+    p_raw: JSON.stringify(rawRows)
+  });
+  if (error) throw error;
+  return data[0];
 }
 
-async function incMonthlyYearly(date, deltaTariff, deltaTotal){
+async function incMonthlyYearly(date, deltaTariff, deltaTotal) {
   if (deltaTariff === 0 && deltaTotal === 0) return;
 
-  const monthKey = date.slice(0,7) + '-01'; // convert to first day of each month for monthly sums
-  const yearKey = Number(date.slice(0,4));
-
-  // Insert or add deltas to monthly table
-  await pool.query(`
-    INSERT INTO tariff_monthly (month, tariff_millions_sum, total_deposits_millions_sum)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (month) DO UPDATE
-      SET tariff_millions_sum = tariff_monthly.tariff_millions_sum + EXCLUDED.tariff_millions_sum,
-          total_deposits_millions_sum = tariff_monthly.total_deposits_millions_sum + EXCLUDED.total_deposits_millions_sum,
-          updated_at = NOW()
-    `, [monthKey, deltaTariff, deltaTotal]);
-  
-  // Same for yearly
-  await pool.query(`
-    INSERT INTO tariff_yearly (year, tariff_millions_sum, total_deposits_millions_sum)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (year) DO UPDATE
-      SET tariff_millions_sum = tariff_yearly.tariff_millions_sum + EXCLUDED.tariff_millions_sum,
-          total_deposits_millions_sum = tariff_yearly.total_deposits_millions_sum + EXCLUDED.total_deposits_millions_sum,
-          updated_at = NOW()
-    `, [yearKey, deltaTariff, deltaTotal]);
+  const { data, error } = await supabase.rpc('inc_monthly_yearly', {
+    p_date: date,
+    p_delta_tariff: deltaTariff,
+    p_delta_total: deltaTotal
+  });
+  if (error) throw error;
 }
 
-// Main function for fetching, parameter deltaDays sets for how many days back should we check
+// ==========================
+// Main fetch logic
+// ==========================
 async function fetchTariffs(deltaDays) {
   const date = setMinusDays(deltaDays);
-  console.log('Starting fetch for target date:', date);
+  console.log('Fetching target date:', date);
 
   let rows;
   try {
     rows = await fetchForDateRaw(date);
   } catch (e) {
-    // Return error with API
     console.error('API fetch error:', e.response?.data ?? e.message);
     process.exitCode = 1;
     return;
   }
 
-  // No rows error
   if (!rows || rows.length === 0) {
     console.warn('No rows returned for date', date);
     return;
   }
 
-  // Tell how many rows there is in response
   console.log('Rows returned:', rows.length);
 
-  // EXTRACT tariff data from rows
-  const tariffRow = rows.find(r => {
-    const cat = safeStr(r.transaction_catg);
-    return cat && cat.toLowerCase().includes('customs');
-  });
+  // Extract tariff
+  const tariffRow = rows.find(r => (safeStr(r.transaction_catg) || '').toLowerCase().includes('customs'));
+  const tariffVal = tariffRow ? parseMillions(tariffRow.transaction_today_amt) : 0;
 
-  // Convert tariff value to number
-  const tariffVal = tariffRow ? parseMillions(tariffRow.transaction_today_amt) : null;
+  // Extract total deposits
+  const totalRowExplicit = rows.find(r => /total deposits/i.test(safeStr(r.transaction_catg) || ''));
+  let totalVal = totalRowExplicit ? parseMillions(totalRowExplicit.transaction_today_amt) : 0;
 
-  // Find all rows with deposits
-  const totalRowExplicit = rows.find(r => {
-    const cat = safeStr(r.transaction_catg) || '';
-    return /(^|\s)total deposits(\s|$)/i.test(cat);
-  }) || null;
-  
-  let totalVal = null;
-  if (totalRowExplicit) {
-    totalVal = parseMillions(totalRowExplicit.transaction_today_amt);
-    console.log('Using explicit total deposits row:', safeStr(totalRowExplicit.transaction_catg), 'value=', totalVal, 'M');
-  } else {
-    // Fallback: sum deposit rows but exclude aggregate/summary lines
-    const filtered = rows.filter(r => {
-    const type = (safeStr(r.transaction_type) || '').toLowerCase();
-    if (!type.includes('deposit')) return false;
-
-    // exclude aggregate/summary lines
-    const cat = (safeStr(r.transaction_catg) || '').toLowerCase();
-    const acct = (safeStr(r.account_type) || '').toLowerCase();
-    const isAggregate = /public debt|public debt cash issues|table iiib|table iiia|table iii|treasury general account total|total deposits|total withdrawals|deposits total|public debt issues|total, deposits|treasury general account total deposits/.test(cat) ||
-                        /total deposits|treasury general account total deposits/.test(acct);
-    if (isAggregate) return false;
-    return true;
-  });
-
-    // Reduce function, sum up all deposits
+  if (!totalVal) {
+    // Fallback sum
+    const filtered = rows.filter(r => (safeStr(r.transaction_type) || '').toLowerCase().includes('deposit') && !isAggregateRow(r));
     totalVal = filtered.reduce((s, r) => s + (parseMillions(r.transaction_today_amt) || 0), 0);
-    console.log('Computed fallback total by summing filtered deposit rows. Count=', filtered.length, 'sum=', totalVal, 'M');
+    console.log('Fallback total deposits sum:', totalVal, 'M');
   }
 
+  try {
+    // Upsert daily
+    const existing = await supabase.rpc('get_existing_tariff_daily', { p_date: date });
+    const oldTariffData = existing?.[0]?.tariff_millions || 0;
+    const oldTotalData = existing?.[0]?.total_deposits_millions || 0;
 
-  // Establish DB connection, if fails show error message
-  try{
-    // If there are existing values
-    const existingResponse = await client.query('SELECT tariff_millions, total_deposits_millions FROM tariff_daily WHERE dts_date=$1', [date])
-    const existing = existingResponse.rows[0] || null;
-    const oldTariffData = existing ? (existing.tariff_millions || 0 ): 0;
-    const oldTotalData = existing ? (existing.total_deposits_millions || 0): 0;
+    const tariffValRounded = Math.round(tariffVal);
+    const totalValRounded = Math.round(totalVal);
 
-    const tariffValRounded = tariffVal != null ? Math.round(tariffVal):0;
-    const totalValRounded = totalVal != null ? Math.round(totalVal):0;
+    await upsertDailyToDB(date, tariffValRounded, totalValRounded, rows);
 
-    // Update daily values and get current stored values
-    await upsertDailyToDB(client, date, tariffValRounded, totalValRounded, rows);
+    const deltaTariff = tariffValRounded - oldTariffData;
+    const deltaTotal = totalValRounded - oldTotalData;
 
-    // Compute deltas = new - old (handle reruns or/and corrections)
-    const deltaTariff = (tariffValRounded || 0) - Number(oldTariffData || 0)
-    const deltaTotal = (totalValRounded || 0) - Number(oldTotalData || 0);
-
-    // If ther is any difference then update
-    if(deltaTariff !== 0 || deltaTotal !== 0){
-      await incMonthlyYearly(client, date, deltaTariff, deltaTotal);
-      console.log(`Aggregates updated: deltaTariff=${deltaTariff} deltaTotal=${deltaTotal}`)
-    }else{
-      console.log('No aggregates changes (delta = 0).')
+    if (deltaTariff !== 0 || deltaTotal !== 0) {
+      await incMonthlyYearly(date, deltaTariff, deltaTotal);
+      console.log(`Aggregates updated: deltaTariff=${deltaTariff}, deltaTotal=${deltaTotal}`);
+    } else {
+      console.log('No aggregate changes (delta=0)');
     }
-    console.log(`Upsert completed for date ${date}: tariff=${tariffValRounded}M ; total=${totalValRounded}M`)
-    console.log('DONE!')
-  } catch (e){
-    console.error('DB error during data update: ', e.message);
+
+    console.log(`Upsert completed for ${date}: tariff=${tariffValRounded}M, total=${totalValRounded}M`);
+  } catch (e) {
+    console.error('DB error during update:', e.message);
     await saveRawLocally(date, rows);
     process.exitCode = 1;
-  } finally {
-    try {await client.end();} catch {}
   }
 }
 
+// ==========================
+// Run main
+// ==========================
 async function main() {
-  try {
-      // Check for -2 working days ago if some mismatch in data and data reporting
-    await fetchTariffs(2);
-    // Check for -1 working day if normal
-    await fetchTariffs(1);
-  } finally {
-    await pool.end();
-    console.log('Connection Closed, Exiting Script...')
-  }
+  await fetchTariffs(2); // -2 days
+  await fetchTariffs(1); // -1 day
+  console.log('Done fetching tariffs');
 }
 
 main().catch(e => {
