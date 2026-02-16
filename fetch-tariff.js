@@ -1,4 +1,4 @@
-// fetch-tariffs-supabase.js
+// fetch-tariffs-final.js
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -87,7 +87,7 @@ async function upsertDailyToDB(date, tariffMillions, totalMillions, rawRows) {
 async function incMonthlyYearly(date, deltaTariff, deltaTotal) {
   if (deltaTariff === 0 && deltaTotal === 0) return;
 
-  const { data, error } = await supabase.rpc('inc_monthly_yearly', {
+  const { error } = await supabase.rpc('inc_monthly_yearly', {
     p_date: date,
     p_delta_tariff: deltaTariff,
     p_delta_total: deltaTotal
@@ -112,19 +112,21 @@ async function fetchTariffs(deltaDays) {
   }
 
   if (!rows || rows.length === 0) {
-    console.warn('No rows returned for date', date);
+    console.warn('No API rows returned for date', date);
     return;
   }
 
-  console.log('Rows returned:', rows.length);
+  console.log('Rows returned from API:', rows.length);
 
   // Extract tariff
   const tariffRow = rows.find(r => (safeStr(r.transaction_catg) || '').toLowerCase().includes('customs'));
-  const tariffVal = tariffRow ? parseMillions(tariffRow.transaction_today_amt) : 0;
+  const tariffVal = tariffRow?.transaction_today_amt != null ? parseMillions(tariffRow.transaction_today_amt) : 0;
 
   // Extract total deposits
   const totalRowExplicit = rows.find(r => /total deposits/i.test(safeStr(r.transaction_catg) || ''));
-  let totalVal = totalRowExplicit ? parseMillions(totalRowExplicit.transaction_today_amt) : 0;
+  let totalVal = totalRowExplicit?.transaction_today_amt != null
+      ? parseMillions(totalRowExplicit.transaction_today_amt)
+      : 0;
 
   if (!totalVal) {
     // Fallback sum
@@ -134,7 +136,7 @@ async function fetchTariffs(deltaDays) {
   }
 
   try {
-    // Upsert daily
+    // Get old values
     const existing = await supabase.rpc('get_existing_tariff_daily', { p_date: date });
     const oldTariffData = existing?.[0]?.tariff_millions || 0;
     const oldTotalData = existing?.[0]?.total_deposits_millions || 0;
@@ -142,8 +144,10 @@ async function fetchTariffs(deltaDays) {
     const tariffValRounded = Math.round(tariffVal);
     const totalValRounded = Math.round(totalVal);
 
+    // Upsert new daily row
     await upsertDailyToDB(date, tariffValRounded, totalValRounded, rows);
 
+    // Compute deltas
     const deltaTariff = tariffValRounded - oldTariffData;
     const deltaTotal = totalValRounded - oldTotalData;
 
@@ -166,8 +170,8 @@ async function fetchTariffs(deltaDays) {
 // Run main
 // ==========================
 async function main() {
-  await fetchTariffs(2); // -2 days
-  await fetchTariffs(1); // -1 day
+  await fetchTariffs(2); // -2 working days
+  await fetchTariffs(1); // -1 working day
   console.log('Done fetching tariffs');
 }
 
