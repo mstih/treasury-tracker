@@ -199,7 +199,7 @@ async function fetchTariffs(deltaDays) {
   // Establish DB connection, if fails show error message
   try{
     // If there are existing values
-    const existingResponse = await client.query('SELECT tariff_millions, total_deposits_millions FROM tariff_daily WHERE dts_date=$1', [date])
+    const existingResponse = await pool.query('SELECT tariff_millions, total_deposits_millions FROM tariff_daily WHERE dts_date=$1', [date])
     const existing = existingResponse.rows[0] || null;
     const oldTariffData = existing ? (existing.tariff_millions || 0 ): 0;
     const oldTotalData = existing ? (existing.total_deposits_millions || 0): 0;
@@ -208,7 +208,7 @@ async function fetchTariffs(deltaDays) {
     const totalValRounded = totalVal != null ? Math.round(totalVal):0;
 
     // Update daily values and get current stored values
-    await upsertDailyToDB(client, date, tariffValRounded, totalValRounded, rows);
+    await upsertDailyToDB(date, tariffValRounded, totalValRounded, rows);
 
     // Compute deltas = new - old (handle reruns or/and corrections)
     const deltaTariff = (tariffValRounded || 0) - Number(oldTariffData || 0)
@@ -216,7 +216,7 @@ async function fetchTariffs(deltaDays) {
 
     // If ther is any difference then update
     if(deltaTariff !== 0 || deltaTotal !== 0){
-      await incMonthlyYearly(client, date, deltaTariff, deltaTotal);
+      await incMonthlyYearly(date, deltaTariff, deltaTotal);
       console.log(`Aggregates updated: deltaTariff=${deltaTariff} deltaTotal=${deltaTotal}`)
     }else{
       console.log('No aggregates changes (delta = 0).')
@@ -227,8 +227,6 @@ async function fetchTariffs(deltaDays) {
     console.error('DB error during data update: ', e.message);
     await saveRawLocally(date, rows);
     process.exitCode = 1;
-  } finally {
-    try {await client.end();} catch {}
   }
 }
 
